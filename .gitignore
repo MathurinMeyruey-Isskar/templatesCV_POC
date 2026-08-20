@@ -9,5 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-#data
-cv_data.json
+echo "*.pptx" >> .gitignore
+echo "!CV_Template_reutilisable.pptx" >> .gitignore
+echo "cv_data.json" >> .gitignore
