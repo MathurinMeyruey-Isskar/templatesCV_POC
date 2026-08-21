@@ -5,7 +5,6 @@ import tempfile
 import base64
 from pptx import Presentation
 
-# Import sécurisé pour la conversion PDF (Windows uniquement)
 try:
     import pythoncom
     import comtypes.client
@@ -18,9 +17,9 @@ except ImportError:
 # ==========================================
 st.set_page_config(page_title="Générateur de CV PowerPoint & PDF", layout="wide")
 DATA_FILE = "cv_data.json"
+PROFILE_FIELDS = ['prenom', 'nom', 'poste', 'experience_ans', 'resume', 'expertise', 'positionnement']
 
 def load_data():
-    """Charge les données depuis le fichier JSON s'il existe."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -30,7 +29,6 @@ def load_data():
     return None
 
 def save_data(silent=True):
-    """Sauvegarde l'état actuel dans le fichier JSON (Sauvegarde Automatique)."""
     data = {
         'profil': st.session_state.profil,
         'competences': st.session_state.competences,
@@ -44,7 +42,7 @@ def save_data(silent=True):
         st.sidebar.success("✅ Données sauvegardées localement !")
 
 # ==========================================
-# INITIALISATION DE L'ÉTAT (SESSION STATE)
+# INITIALISATION ROBUSTE DE LA MÉMOIRE
 # ==========================================
 if 'initialized' not in st.session_state:
     saved = load_data()
@@ -55,58 +53,61 @@ if 'initialized' not in st.session_state:
         st.session_state.certifications = saved.get('certifications', [])
         st.session_state.experiences = saved.get('experiences', [])
     else:
-        st.session_state.profil = {
-            'prenom': '', 'nom': '', 'poste': '', 'experience_ans': '', 
-            'resume': '', 'expertise': '', 'positionnement': '', 'photo_b64': None
-        }
+        st.session_state.profil = {}
         st.session_state.competences = []
         st.session_state.diplomes = []
         st.session_state.certifications = []
         st.session_state.experiences = []
-    
+        
+    for f in PROFILE_FIELDS:
+        st.session_state[f] = st.session_state.profil.get(f, "")
+        
     st.session_state.initialized = True
 
-# Indicateur de sauvegarde dans la barre latérale
+def sync_profil():
+    for f in PROFILE_FIELDS:
+        st.session_state.profil[f] = st.session_state[f]
+
 with st.sidebar:
     st.title("💾 Stockage")
-    st.success("🟢 **Sauvegarde automatique activée.** \nToutes vos modifications sont enregistrées en temps réel sur votre ordinateur.")
+    st.success("🟢 **Sauvegarde automatique activée.** \nToutes vos modifications sont enregistrées en temps réel.")
 
 # ==========================================
-# FONCTIONS DE MANIPULATION DU PPTX
+# FONCTIONS PPTX (CORRIGÉES)
 # ==========================================
-def replace_profile_picture(slide, new_image_path):
-    """Trouve l'image de profil dans le slide et la remplace par la nouvelle."""
+def replace_profile_picture(prs, slide, new_image_path):
     target_shape = None
     for shape in slide.shapes:
         if getattr(shape, "shape_type", None) == 13: # 13 = Image
-            target_shape = shape
-            break
-            
+            # CORRECTION : On vérifie que l'image est plus petite que la largeur de la page
+            # Cela permet de NE PAS sélectionner le fond coloré qui prend toute la page
+            if shape.width < prs.slide_width * 0.5:
+                target_shape = shape
+                break
+                
     if target_shape:
         left, top = target_shape.left, target_shape.top
         width, height = target_shape.width, target_shape.height
-        
         sp = target_shape._element
         sp.getparent().remove(sp)
-        
         slide.shapes.add_picture(new_image_path, left, top, width, height)
 
 def generate_pptx_cv(template_path, data):
     prs = Presentation(template_path)
     p = data['profil']
     
-    # 0. Remplacement de la photo (si fournie)
+    # 0. Remplacement de la photo (Corrigé pour ne pas casser le fond)
     if p.get('photo_b64'):
         img_data = base64.b64decode(p['photo_b64'])
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
             tmp_img.write(img_data)
             tmp_img_path = tmp_img.name
         
-        replace_profile_picture(prs.slides[0], tmp_img_path)
-        os.unlink(tmp_img_path)
+        replace_profile_picture(prs, prs.slides[0], tmp_img_path)
+        try: os.unlink(tmp_img_path)
+        except: pass
 
-    # Préparation des textes
-    exp_str = f"+{p['experience_ans']} années d'expérience" if p['experience_ans'].isdigit() else p['experience_ans']
+    exp_str = f"+{p.get('experience_ans','')} années d'expérience" if str(p.get('experience_ans','')).isdigit() else p.get('experience_ans','')
     
     standard_replacements = {
         "[PRÉNOM]": p.get('prenom', ''),
@@ -119,23 +120,19 @@ def generate_pptx_cv(template_path, data):
         "[POSITIONNEMENT / DOMAINES D’INTERVENTION — 2 à 4 lignes]": p.get('positionnement', '')
     }
 
-    # Compétences
     for i in range(4):
         val = data['competences'][i] if i < len(data['competences']) else ""
         standard_replacements[f"#[COMPÉTENCE {i+1}]"] = f"#{val}" if val else ""
 
-    # Diplômes
     for i in range(2):
-        val = f"{data['diplomes'][i]['ecole']}\n{data['diplomes'][i]['titre']}" if i < len(data['diplomes']) else ""
+        val = f"{data['diplomes'][i]['ecole']} - {data['diplomes'][i]['titre']}" if i < len(data['diplomes']) else ""
         standard_replacements[f"[DIPLÔME / FORMATION {i+1}]"] = val
 
-    # Certifications
     for i in range(4):
         val = f"{data['certifications'][i]['nom']}" if i < len(data['certifications']) else ""
         standard_replacements[f"[CERTIFICATION {i+1}]"] = val
         if i == 2: standard_replacements["[CERTIFICATION / LANGUE]"] = val
 
-    # Expériences
     for i in range(4):
         idx = i + 1
         if i < len(data['experiences']):
@@ -155,7 +152,6 @@ def generate_pptx_cv(template_path, data):
             for j in range(3):
                 standard_replacements[f"[RÉALISATION {idx}.{j+1}]"] = ""
 
-    # 1. Extraction et tri de tous les paragraphes de haut en bas (axe Y)
     paragraphs_with_y = []
     for slide in prs.slides:
         for shape in slide.shapes:
@@ -176,40 +172,46 @@ def generate_pptx_cv(template_path, data):
             
     paragraphs_with_y.sort(key=lambda x: x[0])
     
-    # 2. Remplacement textuel
     meta_counter = 0
     paragraphs_to_delete = []
-
+    
     for _, paragraph in paragraphs_with_y:
-        p_text = "".join(run.text for run in paragraph.runs)
-        
-        # Remplacement de la ligne "META"
+        original_text = "".join(run.text for run in paragraph.runs)
+        if not original_text.strip(): continue 
+            
         meta_tag = "[TYPE / CHARGE / DURÉE / LOCALISATION]"
-        if meta_tag in p_text:
+        if meta_tag in original_text:
             if meta_counter < len(data['experiences']):
                 exp = data['experiences'][meta_counter]
-                meta_val = f"{exp['type']} – {exp['charge']} ({exp['duree']}), {exp['localisation']}"
+                parts = [p for p in [exp.get('type'), exp.get('charge'), exp.get('duree'), exp.get('localisation')] if p]
+                meta_val = " – ".join(parts[:2]) + (f" ({parts[2]})" if len(parts)>2 else "") + (f", {parts[3]}" if len(parts)>3 else "")
             else:
                 meta_val = ""
-                
-            for run in paragraph.runs:
-                if meta_tag in run.text:
-                    run.text = run.text.replace(meta_tag, meta_val)
+            standard_replacements[meta_tag] = meta_val
             meta_counter += 1
 
-        # Remplacement des autres balises
         for key, val in standard_replacements.items():
-            if key in p_text:
+            if key in original_text:
+                replaced_in_run = False
                 for run in paragraph.runs:
                     if key in run.text:
                         run.text = run.text.replace(key, str(val))
-        
-        # Nettoyage : Si la ligne est vide (ou ne contient que des tirets/espaces car l'expérience est vide)
-        new_p_text = "".join(run.text for run in paragraph.runs)
-        if not new_p_text.strip(" -–—,.|•\t\n\r"): 
+                        replaced_in_run = True
+                
+                if not replaced_in_run:
+                    full_text = "".join(r.text for r in paragraph.runs)
+                    new_text = full_text.replace(key, str(val))
+                    if paragraph.runs:
+                        paragraph.runs[0].text = new_text
+                        for r in paragraph.runs[1:]: r.text = ""
+                original_text = "".join(run.text for run in paragraph.runs)
+
+        # Si on a remplacé une balise par du vide et que la ligne n'est plus qu'une puce ou des tirets, on la prépare pour suppression
+        final_text = "".join(run.text for run in paragraph.runs)
+        if not final_text.strip(" -–—,.|•\t\n\r"):
             paragraphs_to_delete.append(paragraph)
 
-    # Suppression effective des paragraphes vides (pour ne pas casser l'espacement)
+    # Suppression stricte des paragraphes vides pour enlever les "puces flottantes"
     for p in paragraphs_to_delete:
         p_element = p._p
         parent = p_element.getparent()
@@ -257,40 +259,23 @@ with tab1:
         uploaded_file = st.file_uploader("Modifier la photo", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
         if uploaded_file is not None:
             st.session_state.profil['photo_b64'] = base64.b64encode(uploaded_file.read()).decode()
+            st.rerun()
 
     with col_info:
         c1, c2 = st.columns(2)
-        st.session_state.profil['prenom'] = c1.text_input("Prénom", value=st.session_state.profil.get('prenom', ''))
-        st.session_state.profil['nom'] = c2.text_input("Nom", value=st.session_state.profil.get('nom', ''))
-        st.session_state.profil['poste'] = c1.text_input("Poste / Fonction", value=st.session_state.profil.get('poste', ''), placeholder="Ex: Product Owner")
-        st.session_state.profil['experience_ans'] = c2.text_input("Années d'expérience", value=st.session_state.profil.get('experience_ans', ''), placeholder="Ex: 3")
+        c1.text_input("Prénom", key="prenom", on_change=sync_profil)
+        c2.text_input("Nom", key="nom", on_change=sync_profil)
+        c1.text_input("Poste / Fonction", key="poste", placeholder="Ex: Product Owner", on_change=sync_profil)
+        c2.text_input("Années d'expérience", key="experience_ans", placeholder="Ex: 3", on_change=sync_profil)
     
     st.subheader("Textes de présentation")
-    st.info("💡 **Conseil** : Formulez des phrases percutantes à la 3ème personne, comme dans l'exemple de Dan.")
-    
-    st.session_state.profil['resume'] = st.text_area(
-        "Résumé (2-4 lignes)", 
-        value=st.session_state.profil.get('resume', ''), 
-        help="Ex: Issu du Programme Grande École de l'ESSEC, Dan cumule trois années d’expérience dans le domaine du conseil.",
-        height=80
-    )
-    st.session_state.profil['expertise'] = st.text_area(
-        "Expertise / Valeur ajoutée", 
-        value=st.session_state.profil.get('expertise', ''), 
-        help="Ex: En pilotant des projets de transformation digitale, il a développé une appétence pour la résolution de problème complexes...",
-        height=80
-    )
-    st.session_state.profil['positionnement'] = st.text_area(
-        "Domaines d'intervention", 
-        value=st.session_state.profil.get('positionnement', ''), 
-        help="Ex: Dan intervient à la fois dans le cadrage de la feuille de route digitale et dans la coordination des développements...",
-        height=80
-    )
+    st.text_area("Résumé (2-4 lignes)", key="resume", help="Ex: Issu du Programme...", height=80, on_change=sync_profil)
+    st.text_area("Expertise / Valeur ajoutée", key="expertise", help="Ex: En pilotant des projets...", height=80, on_change=sync_profil)
+    st.text_area("Domaines d'intervention", key="positionnement", help="Ex: Dan intervient à la fois...", height=80, on_change=sync_profil)
 
 # --- ONGLET 2 : AJOUT DE DONNÉES ---
 with tab2:
     st.header("Alimenter la base de données")
-    st.write("Ajoutez ici toutes vos expériences. Vous pourrez choisir lesquelles afficher à l'étape suivante.")
     
     c1, c2 = st.columns(2)
     
@@ -298,51 +283,71 @@ with tab2:
         with st.form("form_comp", clear_on_submit=True):
             st.subheader("Tags / Compétences")
             new_comp = st.text_input("Nouveau Tag (sans le #)", placeholder="Ex: discovery, erp, data...")
-            if st.form_submit_button("➕ Ajouter") and new_comp:
+            if st.form_submit_button("➕ Ajouter tag") and new_comp:
                 if new_comp not in st.session_state.competences: 
                     st.session_state.competences.append(new_comp)
-                    st.success(f"Tag '{new_comp}' ajouté !")
+        
+        if st.session_state.competences:
+            st.success("✅ **Enregistré :** " + ", ".join(st.session_state.competences))
+            if st.button("🗑️ Vider tags", key="clr_tag"):
+                st.session_state.competences = []
+                st.rerun()
                     
         with st.form("form_dip", clear_on_submit=True):
             st.subheader("Diplômes")
             ecole = st.text_input("École", placeholder="Ex: ESSEC Business School")
-            titre = st.text_input("Titre du diplôme", placeholder="Ex: Master in Management, Programme Grande École")
-            if st.form_submit_button("➕ Ajouter") and ecole:
+            titre = st.text_input("Titre du diplôme", placeholder="Ex: Master in Management")
+            if st.form_submit_button("➕ Ajouter diplôme") and ecole:
                 st.session_state.diplomes.append({"ecole": ecole, "titre": titre})
-                st.success("Diplôme ajouté !")
+                
+        if st.session_state.diplomes:
+            st.info("🎓 **Diplômes enregistrés :**\n" + "\n".join([f"- {d['ecole']} ({d['titre']})" for d in st.session_state.diplomes]))
+            if st.button("🗑️ Vider diplômes", key="clr_dip"):
+                st.session_state.diplomes = []
+                st.rerun()
                 
         with st.form("form_cert", clear_on_submit=True):
             st.subheader("Certifications & Langues")
-            nom_cert = st.text_input("Nom de la certification", placeholder="Ex: Certification PSPO / TOEIC : 990/990")
-            if st.form_submit_button("➕ Ajouter") and nom_cert:
+            nom_cert = st.text_input("Nom de la certification", placeholder="Ex: Certification PSPO")
+            if st.form_submit_button("➕ Ajouter certification") and nom_cert:
                 st.session_state.certifications.append({"nom": nom_cert})
-                st.success("Certification ajoutée !")
+                
+        if st.session_state.certifications:
+            st.info("🏅 **Certifications enregistrées :**\n" + "\n".join([f"- {c['nom']}" for c in st.session_state.certifications]))
+            if st.button("🗑️ Vider certifications", key="clr_cert"):
+                st.session_state.certifications = []
+                st.rerun()
 
     with c2:
         with st.form("form_exp", clear_on_submit=True):
             st.subheader("Expérience Professionnelle")
             ent = st.text_input("Entreprise", placeholder="Ex: EDMOND DE ROTHSCHILD")
             poste = st.text_input("Poste", placeholder="Ex: Chef de projet")
-            ctx = st.text_area("Contexte / Mission", placeholder="Ex: Accompagnement du groupe, spécialisé dans le courtage en assurance, pour la définition et l’implémentation de sa feuille de route data et IA.")
+            ctx = st.text_area("Contexte / Mission", placeholder="Ex: Accompagnement du groupe...")
             
-            st.write("**Détails de la mission**")
             c_meta1, c_meta2 = st.columns(2)
-            meta_type = c_meta1.text_input("Type de contrat", placeholder="Ex: Forfait, Régie, CDI...")
-            meta_charge = c_meta2.text_input("Charge de travail", placeholder="Ex: temps plein, temps partiel")
-            meta_duree = c_meta1.text_input("Durée", placeholder="Ex: 2 mois, 1 an")
-            meta_loc = c_meta2.text_input("Localisation", placeholder="Ex: Paris, Remote")
+            meta_type = c_meta1.text_input("Type de contrat", placeholder="Ex: Forfait")
+            meta_charge = c_meta2.text_input("Charge", placeholder="Ex: temps plein")
+            meta_duree = c_meta1.text_input("Durée", placeholder="Ex: 2 mois")
+            meta_loc = c_meta2.text_input("Lieu", placeholder="Ex: Paris")
             
-            st.write("**Réalisations (Commencez par un verbe d'action)**")
-            reals = st.text_area("Listez 3 points maximum (un par ligne)", placeholder="Ex: Cartographie des cas d'usage...\nPriorisation selon les gains...\nConstruction d'un plan de pilotage...")
+            reals = st.text_area("Réalisations (Listez 3 points maximum, un par ligne)")
             
-            if st.form_submit_button("➕ Ajouter l'expérience") and ent:
+            if st.form_submit_button("➕ Enregistrer l'expérience") and ent:
                 real_list = [r.strip() for r in reals.split('\n') if r.strip()][:3]
                 st.session_state.experiences.append({
                     "entreprise": ent, "poste": poste, "contexte": ctx,
                     "type": meta_type, "charge": meta_charge, "duree": meta_duree, "localisation": meta_loc,
                     "realisations": real_list
                 })
-                st.success(f"Expérience chez '{ent}' ajoutée !")
+                
+        if st.session_state.experiences:
+            st.markdown("### 💼 Expériences enregistrées dans la base")
+            for i, e in enumerate(st.session_state.experiences):
+                st.success(f"**{e['entreprise']}** - {e['poste']}")
+            if st.button("🗑️ Vider les expériences", key="clr_exp"):
+                st.session_state.experiences = []
+                st.rerun()
 
 # --- ONGLET 3 : GÉNÉRATION ---
 with tab3:
@@ -365,11 +370,12 @@ with tab3:
         sel_exp = st.multiselect("Expériences (Max 4 affichées)", exp_opts, default=exp_opts[:4])
         selected_experiences = [e for e in st.session_state.experiences if f"{e['entreprise']} - {e['poste']}" in sel_exp]
 
+    # UTILISATION EXPLICITE DU TEMPLATE DONNÉ
     template_file = "CV_Template_reutilisable.pptx"
     
     st.write("---")
     if not os.path.exists(template_file):
-        st.error(f"❌ Fichier introuvable : `{template_file}`. Veuillez le placer dans le dossier.")
+        st.error(f"❌ Fichier introuvable : `{template_file}`. Veuillez le placer dans le même dossier.")
     else:
         if st.button("🚀 GÉNÉRER MON CV", type="primary", use_container_width=True):
             data_to_render = {
@@ -394,7 +400,7 @@ with tab3:
                             with open(pdf_path, "rb") as file:
                                 c_dl2.download_button("📥 Télécharger le CV (PDF)", data=file, file_name=f"CV_{st.session_state.profil.get('nom', 'Genere')}.pdf", mime="application/pdf", use_container_width=True)
                         except Exception as e_pdf:
-                            st.warning(f"⚠️ La conversion automatique en PDF a échoué. Ouvrez le fichier PPTX téléchargé et faites 'Enregistrer sous > PDF'.")
+                            st.warning(f"⚠️ La conversion en PDF a échoué. Ouvrez le fichier PPTX téléchargé et faites 'Enregistrer sous > PDF'.")
                             
                 except Exception as e:
                     st.error(f"❌ Erreur lors du remplacement : {e}")
@@ -402,6 +408,4 @@ with tab3:
 # ==========================================
 # SAUVEGARDE AUTOMATIQUE EN FIN DE SCRIPT
 # ==========================================
-# Le code arrive ici à la fin de chaque interaction utilisateur. 
-# On déclenche la sauvegarde silencieuse pour tout enregistrer en temps réel.
 save_data(silent=True)
