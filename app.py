@@ -5,17 +5,10 @@ import tempfile
 import base64
 from pptx import Presentation
 
-try:
-    import pythoncom
-    import comtypes.client
-    COM_AVAILABLE = True
-except ImportError:
-    COM_AVAILABLE = False
-
 # ==========================================
 # CONFIGURATION ET SAUVEGARDE
 # ==========================================
-st.set_page_config(page_title="Générateur de CV PowerPoint & PDF", layout="wide")
+st.set_page_config(page_title="Générateur de CV PowerPoint", layout="wide")
 DATA_FILE = "cv_data.json"
 PROFILE_FIELDS = ['prenom', 'nom', 'poste', 'experience_ans', 'resume', 'expertise', 'positionnement']
 
@@ -73,14 +66,12 @@ with st.sidebar:
     st.success("🟢 **Sauvegarde automatique activée.** \nToutes vos modifications sont enregistrées en temps réel.")
 
 # ==========================================
-# FONCTIONS PPTX (CORRIGÉES)
+# FONCTIONS PPTX
 # ==========================================
 def replace_profile_picture(prs, slide, new_image_path):
     target_shape = None
     for shape in slide.shapes:
         if getattr(shape, "shape_type", None) == 13: # 13 = Image
-            # CORRECTION : On vérifie que l'image est plus petite que la largeur de la page
-            # Cela permet de NE PAS sélectionner le fond coloré qui prend toute la page
             if shape.width < prs.slide_width * 0.5:
                 target_shape = shape
                 break
@@ -96,7 +87,7 @@ def generate_pptx_cv(template_path, data):
     prs = Presentation(template_path)
     p = data['profil']
     
-    # 0. Remplacement de la photo (Corrigé pour ne pas casser le fond)
+    # 0. Remplacement de la photo
     if p.get('photo_b64'):
         img_data = base64.b64decode(p['photo_b64'])
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
@@ -206,12 +197,10 @@ def generate_pptx_cv(template_path, data):
                         for r in paragraph.runs[1:]: r.text = ""
                 original_text = "".join(run.text for run in paragraph.runs)
 
-        # Si on a remplacé une balise par du vide et que la ligne n'est plus qu'une puce ou des tirets, on la prépare pour suppression
         final_text = "".join(run.text for run in paragraph.runs)
         if not final_text.strip(" -–—,.|•\t\n\r"):
             paragraphs_to_delete.append(paragraph)
 
-    # Suppression stricte des paragraphes vides pour enlever les "puces flottantes"
     for p in paragraphs_to_delete:
         p_element = p._p
         parent = p_element.getparent()
@@ -222,22 +211,6 @@ def generate_pptx_cv(template_path, data):
     prs.save(tmp_pptx.name)
     tmp_pptx.close()
     return tmp_pptx.name
-
-def convert_pptx_to_pdf(pptx_path):
-    if not COM_AVAILABLE:
-        raise Exception("Librairie comtypes absente.")
-    
-    pdf_path = pptx_path.replace('.pptx', '.pdf')
-    pythoncom.CoInitialize()
-    powerpoint = None
-    try:
-        powerpoint = comtypes.client.CreateObject("Powerpoint.Application")
-        deck = powerpoint.Presentations.Open(os.path.abspath(pptx_path), WithWindow=False)
-        deck.SaveAs(os.path.abspath(pdf_path), 32)
-        deck.Close()
-    finally:
-        pass
-    return pdf_path
 
 # ==========================================
 # INTERFACE UTILISATEUR
@@ -370,7 +343,6 @@ with tab3:
         sel_exp = st.multiselect("Expériences (Max 4 affichées)", exp_opts, default=exp_opts[:4])
         selected_experiences = [e for e in st.session_state.experiences if f"{e['entreprise']} - {e['poste']}" in sel_exp]
 
-    # UTILISATION EXPLICITE DU TEMPLATE DONNÉ
     template_file = "CV_Template_reutilisable.pptx"
     
     st.write("---")
@@ -390,17 +362,15 @@ with tab3:
                 try:
                     pptx_path = generate_pptx_cv(template_file, data_to_render)
                     
-                    c_dl1, c_dl2 = st.columns(2)
                     with open(pptx_path, "rb") as file:
-                        c_dl1.download_button("📥 Télécharger le CV (PPTX)", data=file, file_name=f"CV_{st.session_state.profil.get('nom', 'Genere')}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
-                    
-                    with st.spinner("Conversion en PDF en cours..."):
-                        try:
-                            pdf_path = convert_pptx_to_pdf(pptx_path)
-                            with open(pdf_path, "rb") as file:
-                                c_dl2.download_button("📥 Télécharger le CV (PDF)", data=file, file_name=f"CV_{st.session_state.profil.get('nom', 'Genere')}.pdf", mime="application/pdf", use_container_width=True)
-                        except Exception as e_pdf:
-                            st.warning(f"⚠️ La conversion en PDF a échoué. Ouvrez le fichier PPTX téléchargé et faites 'Enregistrer sous > PDF'.")
+                        st.download_button(
+                            label="📥 Télécharger le CV (PPTX)", 
+                            data=file, 
+                            file_name=f"CV_{st.session_state.profil.get('nom', 'Genere')}.pptx", 
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", 
+                            use_container_width=True
+                        )
+                    st.info("💡 **Pour obtenir un PDF :** Ouvrez le fichier téléchargé avec PowerPoint, puis faites `Fichier > Enregistrer sous > Format PDF`.")
                             
                 except Exception as e:
                     st.error(f"❌ Erreur lors du remplacement : {e}")
